@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { qubicService, QubicTransaction, QubicOraclePrice } from '@/services/qubicService';
+import { smartContractService, RebalanceEvent, CompoundEvent } from '@/services/smartContractService';
 
 export interface OracleData {
   id: string;
@@ -10,6 +12,8 @@ export interface OracleData {
   category: 'real-estate' | 'commodity' | 'forex';
   allocation: number;
   lastUpdate: Date;
+  confidence?: number;
+  source?: string;
 }
 
 export interface UserPortfolio {
@@ -19,6 +23,9 @@ export interface UserPortfolio {
   totalValue: number;
   deposits: number[];
   compoundHistory: { timestamp: Date; amount: number; apy: number }[];
+  transactions: QubicTransaction[];
+  totalEarned: number;
+  lastHarvest: Date | null;
 }
 
 export interface GovernanceProposal {
@@ -29,27 +36,53 @@ export interface GovernanceProposal {
   votesAgainst: number;
   status: 'active' | 'passed' | 'rejected';
   endDate: Date;
+  quorum: number;
+  userVoted?: boolean;
+}
+
+export interface ProtocolMetrics {
+  tvl: number;
+  totalUsers: number;
+  dailyVolume: number;
+  protocolRevenue: number;
+  averageApy: number;
+  rebalanceCount: number;
+  lastRebalance: Date | null;
+  nextRebalance: Date | null;
 }
 
 interface AppState {
   isConnected: boolean;
   walletAddress: string | null;
   isDemoMode: boolean;
+  isAutoMode: boolean;
   oracleData: OracleData[];
   portfolio: UserPortfolio;
   proposals: GovernanceProposal[];
   currentApy: number;
   totalTvl: number;
+  rebalanceHistory: RebalanceEvent[];
+  compoundHistory: CompoundEvent[];
+  protocolMetrics: ProtocolMetrics;
+  isLoading: boolean;
+  notification: { message: string; type: 'success' | 'error' | 'info' } | null;
   
   // Actions
-  connectWallet: () => void;
+  connectWallet: () => Promise<void>;
   disconnectWallet: () => void;
   toggleDemoMode: () => void;
+  toggleAutoMode: () => void;
   updateOracleData: (data: OracleData[]) => void;
-  deposit: (amount: number) => void;
-  withdraw: (shares: number) => void;
+  deposit: (amount: number) => Promise<void>;
+  withdraw: (shares: number) => Promise<void>;
   vote: (proposalId: string, support: boolean) => void;
-  rebalance: () => void;
+  rebalance: () => Promise<void>;
+  compound: () => Promise<void>;
+  requestFaucet: () => Promise<void>;
+  setNotification: (message: string, type: 'success' | 'error' | 'info') => void;
+  clearNotification: () => void;
+  startOracleSubscription: () => void;
+  updateMetrics: () => void;
 }
 
 const initialOracleData: OracleData[] = [
@@ -63,6 +96,8 @@ const initialOracleData: OracleData[] = [
     category: 'real-estate',
     allocation: 45,
     lastUpdate: new Date(),
+    confidence: 0.98,
+    source: 'QUBIC_ORACLE_NODE_1',
   },
   {
     id: 'xau',
@@ -74,6 +109,8 @@ const initialOracleData: OracleData[] = [
     category: 'commodity',
     allocation: 30,
     lastUpdate: new Date(),
+    confidence: 0.97,
+    source: 'QUBIC_ORACLE_NODE_2',
   },
   {
     id: 'usdtry',
@@ -85,16 +122,32 @@ const initialOracleData: OracleData[] = [
     category: 'forex',
     allocation: 25,
     lastUpdate: new Date(),
+    confidence: 0.96,
+    source: 'QUBIC_ORACLE_NODE_3',
   },
 ];
 
 const initialPortfolio: UserPortfolio = {
-  qxBalance: 10000,
+  qxBalance: 0,
   sharesOwned: 0,
   shareValue: 1.0,
   totalValue: 0,
   deposits: [],
   compoundHistory: [],
+  transactions: [],
+  totalEarned: 0,
+  lastHarvest: null,
+};
+
+const initialMetrics: ProtocolMetrics = {
+  tvl: 2847500,
+  totalUsers: 1247,
+  dailyVolume: 458000,
+  protocolRevenue: 14237,
+  averageApy: 15.2,
+  rebalanceCount: 0,
+  lastRebalance: null,
+  nextRebalance: new Date(Date.now() + 3600000), // 1 hour from now
 };
 
 const initialProposals: GovernanceProposal[] = [
@@ -106,6 +159,8 @@ const initialProposals: GovernanceProposal[] = [
     votesAgainst: 3200,
     status: 'active',
     endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    quorum: 20000,
+    userVoted: false,
   },
   {
     id: '2',
@@ -115,6 +170,8 @@ const initialProposals: GovernanceProposal[] = [
     votesAgainst: 7100,
     status: 'active',
     endDate: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
+    quorum: 15000,
+    userVoted: false,
   },
 ];
 
@@ -122,63 +179,144 @@ export const useAppStore = create<AppState>((set, get) => ({
   isConnected: false,
   walletAddress: null,
   isDemoMode: false,
+  isAutoMode: false,
   oracleData: initialOracleData,
   portfolio: initialPortfolio,
   proposals: initialProposals,
   currentApy: 15.2,
   totalTvl: 2847500,
+  rebalanceHistory: [],
+  compoundHistory: [],
+  protocolMetrics: initialMetrics,
+  isLoading: false,
+  notification: null,
 
-  connectWallet: () => {
-    const mockAddress = '0x' + Math.random().toString(16).slice(2, 10) + '...' + Math.random().toString(16).slice(2, 6);
-    set({ isConnected: true, walletAddress: mockAddress });
+  connectWallet: async () => {
+    set({ isLoading: true });
+    try {
+      const wallet = await qubicService.connectWallet();
+      set({
+        isConnected: true,
+        walletAddress: wallet.address,
+        portfolio: {
+          ...get().portfolio,
+          qxBalance: wallet.balance,
+        },
+        isLoading: false
+      });
+      get().setNotification('Wallet connected successfully!', 'success');
+      get().startOracleSubscription();
+    } catch (error) {
+      set({ isLoading: false });
+      get().setNotification('Failed to connect wallet', 'error');
+    }
   },
 
   disconnectWallet: () => {
-    set({ isConnected: false, walletAddress: null });
+    qubicService.disconnectWallet();
+    set({
+      isConnected: false,
+      walletAddress: null,
+      portfolio: initialPortfolio
+    });
+    get().setNotification('Wallet disconnected', 'info');
   },
 
   toggleDemoMode: () => {
-    set((state) => ({ isDemoMode: !state.isDemoMode }));
+    const newDemoMode = !get().isDemoMode;
+    set({ isDemoMode: newDemoMode });
+    if (newDemoMode) {
+      get().setNotification('Demo mode activated - Live simulations running', 'info');
+      // Start auto-compound in demo mode
+      smartContractService.simulateAutoCompound();
+    }
+  },
+
+  toggleAutoMode: () => {
+    const newAutoMode = !get().isAutoMode;
+    set({ isAutoMode: newAutoMode });
+    get().setNotification(
+      newAutoMode ? 'Auto-mode enabled - Automatic rebalancing active' : 'Auto-mode disabled',
+      'info'
+    );
   },
 
   updateOracleData: (data) => {
     set({ oracleData: data });
   },
 
-  deposit: (amount) => {
+  deposit: async (amount) => {
     const state = get();
-    const sharesToMint = amount / state.portfolio.shareValue;
+    if (!state.walletAddress) {
+      get().setNotification('Please connect wallet first', 'error');
+      return;
+    }
     
-    set({
-      portfolio: {
-        ...state.portfolio,
-        qxBalance: state.portfolio.qxBalance - amount,
-        sharesOwned: state.portfolio.sharesOwned + sharesToMint,
-        totalValue: (state.portfolio.sharesOwned + sharesToMint) * state.portfolio.shareValue,
-        deposits: [...state.portfolio.deposits, amount],
-      },
-      totalTvl: state.totalTvl + amount,
-    });
+    set({ isLoading: true });
+    try {
+      const share = await smartContractService.deposit(amount, state.walletAddress);
+      const sharesToMint = share.amount;
+      
+      set({
+        portfolio: {
+          ...state.portfolio,
+          qxBalance: state.portfolio.qxBalance - amount,
+          sharesOwned: state.portfolio.sharesOwned + sharesToMint,
+          totalValue: (state.portfolio.sharesOwned + sharesToMint) * smartContractService.getCurrentShareValue(),
+          deposits: [...state.portfolio.deposits, amount],
+          shareValue: smartContractService.getCurrentShareValue(),
+        },
+        totalTvl: state.totalTvl + amount,
+        isLoading: false,
+      });
+      
+      get().setNotification(`Successfully deposited ${amount} QX`, 'success');
+      get().updateMetrics();
+    } catch (error: any) {
+      set({ isLoading: false });
+      get().setNotification(error.message || 'Deposit failed', 'error');
+    }
   },
 
-  withdraw: (shares) => {
+  withdraw: async (shares) => {
     const state = get();
-    const qxAmount = shares * state.portfolio.shareValue;
+    if (!state.walletAddress) {
+      get().setNotification('Please connect wallet first', 'error');
+      return;
+    }
     
-    set({
-      portfolio: {
-        ...state.portfolio,
-        qxBalance: state.portfolio.qxBalance + qxAmount,
-        sharesOwned: state.portfolio.sharesOwned - shares,
-        totalValue: (state.portfolio.sharesOwned - shares) * state.portfolio.shareValue,
-      },
-      totalTvl: state.totalTvl - qxAmount,
-    });
+    set({ isLoading: true });
+    try {
+      const qxAmount = await smartContractService.withdraw(shares, state.walletAddress);
+      
+      set({
+        portfolio: {
+          ...state.portfolio,
+          qxBalance: state.portfolio.qxBalance + qxAmount,
+          sharesOwned: state.portfolio.sharesOwned - shares,
+          totalValue: (state.portfolio.sharesOwned - shares) * smartContractService.getCurrentShareValue(),
+          shareValue: smartContractService.getCurrentShareValue(),
+        },
+        totalTvl: state.totalTvl - qxAmount,
+        isLoading: false,
+      });
+      
+      get().setNotification(`Successfully withdrew ${qxAmount.toFixed(2)} QX`, 'success');
+      get().updateMetrics();
+    } catch (error: any) {
+      set({ isLoading: false });
+      get().setNotification(error.message || 'Withdrawal failed', 'error');
+    }
   },
 
   vote: (proposalId, support) => {
     const state = get();
     const shares = state.portfolio.sharesOwned;
+    
+    if (shares <= 0) {
+      get().setNotification('You need YF shares to vote', 'error');
+      return;
+    }
     
     set({
       proposals: state.proposals.map((p) =>
@@ -187,30 +325,174 @@ export const useAppStore = create<AppState>((set, get) => ({
               ...p,
               votesFor: support ? p.votesFor + shares : p.votesFor,
               votesAgainst: !support ? p.votesAgainst + shares : p.votesAgainst,
+              userVoted: true,
             }
           : p
       ),
     });
+    
+    get().setNotification(`Vote cast successfully with ${shares.toFixed(2)} YF shares`, 'success');
   },
 
-  rebalance: () => {
+  rebalance: async () => {
     const state = get();
-    const totalYield = state.oracleData.reduce((acc, d) => acc + d.yield * d.allocation / 100, 0);
+    set({ isLoading: true });
     
-    // Simulate yield compound
-    const newShareValue = state.portfolio.shareValue * (1 + totalYield / 100 / 365);
+    try {
+      const currentAllocations: Record<string, number> = {};
+      const oraclePrices: Record<string, number> = {};
+      const targetYields: Record<string, number> = {};
+      
+      state.oracleData.forEach(asset => {
+        currentAllocations[asset.symbol] = asset.allocation;
+        oraclePrices[asset.symbol] = asset.price;
+        targetYields[asset.symbol] = asset.yield;
+      });
+      
+      const rebalanceEvent = await smartContractService.rebalance(
+        currentAllocations,
+        oraclePrices,
+        targetYields
+      );
+      
+      // Update allocations based on rebalance
+      const updatedOracleData = state.oracleData.map(asset => ({
+        ...asset,
+        allocation: rebalanceEvent.newAllocations[asset.symbol] || asset.allocation,
+      }));
+      
+      set({
+        oracleData: updatedOracleData,
+        rebalanceHistory: [...state.rebalanceHistory, rebalanceEvent],
+        isLoading: false,
+      });
+      
+      get().setNotification('Portfolio rebalanced successfully', 'success');
+      get().updateMetrics();
+    } catch (error: any) {
+      set({ isLoading: false });
+      get().setNotification(error.message || 'Rebalance failed', 'error');
+    }
+  },
+
+  compound: async () => {
+    const state = get();
+    set({ isLoading: true });
+    
+    try {
+      const compoundEvent = await smartContractService.compound(state.currentApy);
+      
+      set({
+        portfolio: {
+          ...state.portfolio,
+          shareValue: compoundEvent.newShareValue,
+          totalValue: state.portfolio.sharesOwned * compoundEvent.newShareValue,
+          compoundHistory: [
+            ...state.portfolio.compoundHistory,
+            {
+              timestamp: compoundEvent.timestamp,
+              amount: compoundEvent.amount,
+              apy: compoundEvent.apy
+            },
+          ],
+          totalEarned: state.portfolio.totalEarned + compoundEvent.amount,
+          lastHarvest: new Date(),
+        },
+        compoundHistory: [...state.compoundHistory, compoundEvent],
+        isLoading: false,
+      });
+      
+      get().setNotification(`Yield compounded: +${compoundEvent.amount.toFixed(2)} QX`, 'success');
+      get().updateMetrics();
+    } catch (error: any) {
+      set({ isLoading: false });
+      get().setNotification(error.message || 'Compound failed', 'error');
+    }
+  },
+
+  requestFaucet: async () => {
+    set({ isLoading: true });
+    try {
+      const amount = await qubicService.requestFaucet();
+      const state = get();
+      
+      set({
+        portfolio: {
+          ...state.portfolio,
+          qxBalance: state.portfolio.qxBalance + amount,
+        },
+        isLoading: false,
+      });
+      
+      get().setNotification(`Received ${amount} QX from testnet faucet!`, 'success');
+    } catch (error: any) {
+      set({ isLoading: false });
+      get().setNotification('Faucet request failed', 'error');
+    }
+  },
+
+  setNotification: (message, type) => {
+    set({ notification: { message, type } });
+    // Auto-clear after 5 seconds
+    setTimeout(() => get().clearNotification(), 5000);
+  },
+
+  clearNotification: () => {
+    set({ notification: null });
+  },
+
+  startOracleSubscription: () => {
+    qubicService.subscribeToOracles((oraclePrice: QubicOraclePrice) => {
+      const state = get();
+      const updatedOracleData = state.oracleData.map(asset => {
+        if (asset.symbol === oraclePrice.assetId) {
+          const oldPrice = asset.price;
+          const newPrice = oraclePrice.price;
+          const change24h = ((newPrice - oldPrice) / oldPrice) * 100;
+          
+          return {
+            ...asset,
+            price: newPrice,
+            change24h: asset.change24h + change24h,
+            lastUpdate: oraclePrice.timestamp,
+            confidence: oraclePrice.confidence,
+            source: oraclePrice.source,
+          };
+        }
+        return asset;
+      });
+      
+      set({ oracleData: updatedOracleData });
+      
+      // Auto-rebalance if enabled and threshold met
+      if (state.isAutoMode) {
+        const priceChanges = updatedOracleData.map(a => Math.abs(a.change24h));
+        const maxChange = Math.max(...priceChanges);
+        if (maxChange > 5) {
+          get().rebalance();
+        }
+      }
+    });
+  },
+
+  updateMetrics: () => {
+    const state = get();
+    const tvl = smartContractService.getTVL();
+    const rebalanceHistory = smartContractService.getRebalanceHistory();
     
     set({
-      portfolio: {
-        ...state.portfolio,
-        shareValue: newShareValue,
-        totalValue: state.portfolio.sharesOwned * newShareValue,
-        compoundHistory: [
-          ...state.portfolio.compoundHistory,
-          { timestamp: new Date(), amount: state.portfolio.totalValue * (totalYield / 100 / 365), apy: totalYield },
-        ],
+      protocolMetrics: {
+        ...state.protocolMetrics,
+        tvl,
+        totalUsers: state.protocolMetrics.totalUsers + (Math.random() > 0.7 ? 1 : 0),
+        dailyVolume: state.protocolMetrics.dailyVolume + (Math.random() * 10000),
+        protocolRevenue: state.protocolMetrics.protocolRevenue + (tvl * 0.005 / 365),
+        averageApy: state.currentApy,
+        rebalanceCount: rebalanceHistory.length,
+        lastRebalance: rebalanceHistory.length > 0 ? rebalanceHistory[rebalanceHistory.length - 1].timestamp : null,
+        nextRebalance: new Date(Date.now() + 3600000),
       },
-      currentApy: totalYield,
+      totalTvl: tvl,
     });
   },
 }));
