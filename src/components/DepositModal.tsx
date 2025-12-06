@@ -13,7 +13,11 @@ export function DepositModal({ open, onOpenChange }: DepositModalProps) {
   const [amount, setAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
-  const { portfolio, deposit, currentApy } = useAppStore();
+  const { portfolio, deposit, currentApy, oracleData } = useAppStore();
+  
+  // Calculate APY from current allocations if currentApy is 0
+  const calculatedApy = oracleData.reduce((acc, d) => acc + (d.yield * d.allocation / 100), 0);
+  const displayApy = currentApy || calculatedApy;
 
   const handleDeposit = async () => {
     const depositAmount = parseFloat(amount);
@@ -21,10 +25,12 @@ export function DepositModal({ open, onOpenChange }: DepositModalProps) {
 
     setIsProcessing(true);
     
-    // Simulate transaction
+    // Execute deposit through store
+    await deposit(depositAmount);
+    
+    // Simulate transaction confirmation
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    deposit(depositAmount);
     setIsProcessing(false);
     setIsSuccess(true);
     
@@ -36,7 +42,7 @@ export function DepositModal({ open, onOpenChange }: DepositModalProps) {
   };
 
   const expectedShares = amount ? (parseFloat(amount) / portfolio.shareValue).toFixed(4) : '0';
-  const expectedYield = amount ? ((parseFloat(amount) * currentApy / 100)).toFixed(2) : '0';
+  const expectedYield = amount ? ((parseFloat(amount) * displayApy / 100)).toFixed(2) : '0';
 
   return (
     <AnimatePresence>
@@ -137,7 +143,7 @@ export function DepositModal({ open, onOpenChange }: DepositModalProps) {
                   </div>
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">Current APY</span>
-                    <span className="text-success font-semibold">{currentApy}%</span>
+                    <span className="text-success font-semibold">{displayApy.toFixed(1)}%</span>
                   </div>
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">Est. yearly yield</span>

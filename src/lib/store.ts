@@ -183,7 +183,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   oracleData: initialOracleData,
   portfolio: initialPortfolio,
   proposals: initialProposals,
-  currentApy: 15.2,
+  currentApy: 0, // Will be calculated from oracle data
   totalTvl: 2847500,
   rebalanceHistory: [],
   compoundHistory: [],
@@ -195,13 +195,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoading: true });
     try {
       const wallet = await qubicService.connectWallet();
+      const state = get();
+      
+      // Calculate current APY from oracle data
+      const totalYield = state.oracleData.reduce((acc, d) => acc + (d.yield * d.allocation / 100), 0);
+      
       set({
         isConnected: true,
         walletAddress: wallet.address,
         portfolio: {
-          ...get().portfolio,
+          ...state.portfolio,
           qxBalance: wallet.balance,
         },
+        currentApy: totalYield,
         isLoading: false
       });
       get().setNotification('Wallet connected successfully!', 'success');
@@ -285,19 +291,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     
+    if (shares <= 0 || shares > state.portfolio.sharesOwned) {
+      get().setNotification('Invalid withdrawal amount', 'error');
+      return;
+    }
+    
     set({ isLoading: true });
     try {
       const qxAmount = await smartContractService.withdraw(shares, state.walletAddress);
+      const newSharesOwned = state.portfolio.sharesOwned - shares;
+      const currentShareValue = smartContractService.getCurrentShareValue();
       
       set({
         portfolio: {
           ...state.portfolio,
           qxBalance: state.portfolio.qxBalance + qxAmount,
-          sharesOwned: state.portfolio.sharesOwned - shares,
-          totalValue: (state.portfolio.sharesOwned - shares) * smartContractService.getCurrentShareValue(),
-          shareValue: smartContractService.getCurrentShareValue(),
+          sharesOwned: newSharesOwned,
+          totalValue: newSharesOwned * currentShareValue,
+          shareValue: currentShareValue,
         },
-        totalTvl: state.totalTvl - qxAmount,
+        totalTvl: Math.max(0, state.totalTvl - qxAmount),
         isLoading: false,
       });
       
@@ -361,9 +374,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         allocation: rebalanceEvent.newAllocations[asset.symbol] || asset.allocation,
       }));
       
+      // Recalculate APY based on new allocations
+      const newApy = updatedOracleData.reduce((acc, d) => acc + (d.yield * d.allocation / 100), 0);
+      
       set({
         oracleData: updatedOracleData,
         rebalanceHistory: [...state.rebalanceHistory, rebalanceEvent],
+        currentApy: newApy,
         isLoading: false,
       });
       
@@ -442,6 +459,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   startOracleSubscription: () => {
+    // Calculate initial APY
+    const state = get();
+    const initialApy = state.oracleData.reduce((acc, d) => acc + (d.yield * d.allocation / 100), 0);
+    set({ currentApy: initialApy });
+    
     qubicService.subscribeToOracles((oraclePrice: QubicOraclePrice) => {
       const state = get();
       const updatedOracleData = state.oracleData.map(asset => {
@@ -462,7 +484,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         return asset;
       });
       
-      set({ oracleData: updatedOracleData });
+      // Recalculate APY whenever oracle data updates
+      const currentApy = updatedOracleData.reduce((acc, d) => acc + (d.yield * d.allocation / 100), 0);
+      
+      set({
+        oracleData: updatedOracleData,
+        currentApy
+      });
       
       // Auto-rebalance if enabled and threshold met
       if (state.isAutoMode) {

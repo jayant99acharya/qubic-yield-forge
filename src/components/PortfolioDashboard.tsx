@@ -3,14 +3,20 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { Wallet, TrendingUp, Coins, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { useAppStore } from '@/lib/store';
 import { Button } from '@/components/ui/button';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { DepositModal } from './DepositModal';
+import { WithdrawModal } from './WithdrawModal';
 
 const COLORS = ['#00D4AA', '#FFB347', '#4ECDC4'];
 
 export function PortfolioDashboard() {
   const [isDepositOpen, setIsDepositOpen] = useState(false);
+  const [isWithdrawOpen, setIsWithdrawOpen] = useState(false);
   const { portfolio, oracleData, currentApy, isConnected, connectWallet } = useAppStore();
+  
+  // Calculate APY from current allocations
+  const calculatedApy = oracleData.reduce((acc, d) => acc + (d.yield * d.allocation / 100), 0);
+  const displayApy = currentApy || calculatedApy;
 
   const pieData = oracleData.map((asset) => ({
     name: asset.symbol,
@@ -42,7 +48,7 @@ export function PortfolioDashboard() {
     },
     {
       label: 'Current APY',
-      value: currentApy.toFixed(1),
+      value: displayApy.toFixed(1),
       suffix: '%',
       icon: ArrowUpRight,
       color: 'text-success',
@@ -122,6 +128,7 @@ export function PortfolioDashboard() {
                   variant="outline"
                   className="flex-1"
                   disabled={portfolio.sharesOwned <= 0}
+                  onClick={() => setIsWithdrawOpen(true)}
                 >
                   <ArrowUpRight className="w-5 h-5" />
                   Withdraw
@@ -189,6 +196,7 @@ export function PortfolioDashboard() {
       </div>
 
       <DepositModal open={isDepositOpen} onOpenChange={setIsDepositOpen} />
+      <WithdrawModal open={isWithdrawOpen} onOpenChange={setIsWithdrawOpen} />
     </section>
   );
 }
