@@ -131,22 +131,31 @@ export function GovernancePanel() {
                   {/* Vote Actions */}
                   {proposal.status === 'active' && isConnected && portfolio.sharesOwned > 0 && (
                     <div className="flex lg:flex-col gap-3 lg:min-w-[140px]">
-                      <Button
-                        variant="outline"
-                        className="flex-1 border-success text-success hover:bg-success/10"
-                        onClick={() => vote(proposal.id, true)}
-                      >
-                        <CheckCircle className="w-4 h-4" />
-                        Vote For
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="flex-1 border-destructive text-destructive hover:bg-destructive/10"
-                        onClick={() => vote(proposal.id, false)}
-                      >
-                        <XCircle className="w-4 h-4" />
-                        Vote Against
-                      </Button>
+                      {proposal.userVoted ? (
+                        <div className="flex items-center justify-center gap-2 text-muted-foreground px-4 py-2 border border-border rounded-md">
+                          <CheckCircle className="w-4 h-4 text-primary" />
+                          <span className="text-sm">Voted</span>
+                        </div>
+                      ) : (
+                        <>
+                          <Button
+                            variant="outline"
+                            className="flex-1 border-success text-success hover:bg-success/10"
+                            onClick={() => vote(proposal.id, true)}
+                          >
+                            <CheckCircle className="w-4 h-4" />
+                            Vote For
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="flex-1 border-destructive text-destructive hover:bg-destructive/10"
+                            onClick={() => vote(proposal.id, false)}
+                          >
+                            <XCircle className="w-4 h-4" />
+                            Vote Against
+                          </Button>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
